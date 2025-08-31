@@ -601,7 +601,7 @@ setup_disk_variables() {
   export DISK
   
   # Try to find by-id path for reliability (follow links to verify target)
-  local disk_id_path
+  local disk_id_path=""
   # Find all by-id links and check which one points to our exact device
   while IFS= read -r -d '' link; do
     if [[ $(readlink -f "$link") == "/dev/${selected_disk}" ]]; then
