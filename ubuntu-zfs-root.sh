@@ -15,7 +15,8 @@ trap cleanup_on_error ERR
 # Default configuration values - All configurable via professional interface
 export DISTRO="desktop"           # Installation type (desktop/server)
 export RELEASE="noble"            # Ubuntu release (noble, mantic, jammy) 
-export DISK="sda"                 # Default disk (selected via safe disk picker)
+# Default disk: require explicit selection via the TUI
+export DISK=""                    # Will be set by setup_disk_variables()
 
 # Release-specific version mappings
 get_release_version() {
@@ -190,8 +191,8 @@ dialog_select_disk() {
       return 1
     fi
     
-    # Update DISK variable for compatibility
-    DISK="$selected_disk"
+    # DISK is already set by setup_disk_variables to the full device path
+    # (e.g. /dev/sda). Do not overwrite it with the short name here.
     
     # Extra confirmation for removable devices
     removable=$(cat "/sys/block/${selected_disk}/removable" 2>/dev/null || echo "0")
@@ -794,7 +795,10 @@ ubuntu_debootstrap() {
   mkdir "${MOUNTPOINT}"/etc/zfs
   
   if [[ ${ENCRYPTION} =~ "true" ]]; then
-    cp /etc/zfs/"${POOLNAME}".key "${MOUNTPOINT}"/etc/zfs
+    # Copy key file only if it exists (pool uses passphrase prompt by default)
+    if [[ -f /etc/zfs/"${POOLNAME}".key ]]; then
+      cp /etc/zfs/"${POOLNAME}".key "${MOUNTPOINT}"/etc/zfs
+    fi
   fi
 
   # Chroot into the new OS
@@ -935,19 +939,11 @@ EFI_install() {
     exit 1
   fi
   
-  # Mount efivarfs if not already mounted
-  local efivarfs_mounted=false
-  if ! mount | grep -q "efivarfs"; then
-    echo "Mounting efivarfs..."
-    mount -t efivarfs efivarfs /sys/firmware/efi/efivars || {
-      echo "❌ Failed to mount efivarfs"
-      exit 1
-    }
-    efivarfs_mounted=true
-  fi
+  # efivarfs will be mounted inside the chroot for efibootmgr
   
   debug_me
   run_in_chroot <<-EOCHROOT
+mount -t efivarfs efivarfs /sys/firmware/efi/efivars || true
 ${APT} install -y efibootmgr
 efibootmgr -c -d "${DISK}" -p "${BOOT_PART}" \
   -L "ZFSBootMenu (Backup)" \
@@ -959,14 +955,10 @@ efibootmgr -c -d "${DISK}" -p "${BOOT_PART}" \
 
 sync
 sleep 1
-debug_me
+umount /sys/firmware/efi/efivars || true
 EOCHROOT
 
-  # Unmount efivarfs if we mounted it
-  if [[ "$efivarfs_mounted" == "true" ]]; then
-    echo "Unmounting efivarfs..."
-    umount /sys/firmware/efi/efivars || true
-  fi
+  # efivarfs was mounted inside chroot and unmounted there
 }
 
 # Install rEFInd
