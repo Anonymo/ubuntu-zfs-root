@@ -1,130 +1,116 @@
 # Ubuntu ZFS on Root Installer
 
-A user-friendly installer script with **Debian-style TUI interface** for installing Ubuntu Desktop or Server on ZFS root filesystem. Features ZFSBootMenu bootloader with optional rEFInd support, native ZFS encryption, and professional guided installation.
+A clean, dialog-based installer for Ubuntu Desktop or Server on ZFS root. It configures ZFSBootMenu (with optional rEFInd), native ZFS encryption, and a sensible dataset layout — without manual commands.
 
-## Why Use This Installer?
+## Highlights
 
-- **Easy ZFS Setup**: No complex manual commands - just run the installer
-- **Modern Boot Management**: Uses ZFSBootMenu for reliable ZFS booting
-- **Enterprise Features**: Native ZFS encryption, snapshots, and compression
-- **Ubuntu Compatibility**: Works with Ubuntu 22.04 LTS, 24.04 LTS, and 25.04+
-- **Safe Installation**: Multiple confirmation prompts and preflight checks
-- **Professional Interface**: Clean dialog-based installer similar to Debian
-
-## Key Features
-
-- **Guided TUI Interface**: Step-by-step installation with clear options
-- **UEFI + ZFSBootMenu**: Modern UEFI boot with ZFS snapshot support  
-- **Smart ZFS Layout**: Optimized datasets for `/`, `/home`, `/var`, `/tmp`, `/srv`
-- **Optional Encryption**: Native ZFS encryption with passphrase
-- **Automatic Setup**: Handles partitioning, bootloader, and system configuration
-- **Preflight Validation**: Checks system requirements before installation
-- **Ubuntu Security Model**: Uses sudo instead of root login (Ubuntu default)
+- Guided TUI: straightforward steps with clear prompts
+- UEFI + ZFSBootMenu: reliable boot management for ZFS
+- Sane ZFS layout: datasets for `/`, `/home`, `/var`, `/tmp`, `/srv`
+- Optional encryption: native ZFS passphrase
+- Preflight checks: validates tools, UEFI, basic networking
+- Ubuntu defaults: user + sudo; root login remains locked
 
 ## Requirements
 
-- **Live Media**: Ubuntu 22.04 LTS, 24.04 LTS, or 25.04+ live USB/DVD
-- **System**: UEFI firmware (BIOS/Legacy not supported)
-- **Memory**: 8 GB RAM minimum for smooth installation
-- **Storage**: 20+ GB target disk (will be completely erased)
-- **Network**: Internet connection for package downloads
+- Live media: Ubuntu 24.04 LTS or 22.04 LTS (25.04 works with standard kernel)
+- Firmware: UEFI mode (Legacy/BIOS is not supported)
+- Memory: 8 GB RAM recommended
+- Disk: 20+ GB on the target device (it will be erased)
+- Network: Internet connection for packages and ZFSBootMenu download
 
-## Installation Steps
+## Quick Start
 
-### 1. Boot Ubuntu Live Media
-Boot your system from Ubuntu live USB/DVD in **UEFI mode** (not Legacy/BIOS).
+1) Boot the Ubuntu live environment in UEFI mode
+2) Download and run the installer
+   ```bash
+   wget https://raw.githubusercontent.com/Anonymo/ubuntu-zfs-root/main/ubuntu-zfs-root.sh
+   chmod +x ubuntu-zfs-root.sh
+   sudo ./ubuntu-zfs-root.sh
+   ```
+3) In the TUI
+   - Edit Configuration: hostname, username, locale, timezone, distro type
+   - Select Installation Disk: choose the target disk (it will be erased)
+   - Set Passwords: user password and optional ZFS encryption passphrase
+   - Installation Options: encryption, HWE on LTS, minimal install, sudo policy, driver, optional rEFInd
+   - Start Installation
 
-### 2. Download and Run Installer
+Environment overrides (optional):
 ```bash
-# Download the installer
-wget https://raw.githubusercontent.com/Anonymo/ubuntu-zfs-root/main/ubuntu-zfs-root.sh
-
-# Make it executable
-chmod +x ubuntu-zfs-root.sh
-
-# Run the installer (requires root privileges)
-sudo ./ubuntu-zfs-root.sh
+export RELEASE=noble          # noble (24.04) or jammy (22.04)
+export ID=ubuntu              # rpool/ROOT/<ID>
+export INSTALL_REFIND=false   # also install rEFInd if true
+export ENCRYPTION=true        # native ZFS encryption
+export HWE_KERNEL=true        # HWE on LTS; standard kernel elsewhere
+export MIRROR_URL=            # leave empty to auto-select default
+export DEBUG=false            # true for verbose shell tracing
 ```
 
-### 3. Follow the TUI Interface
-The installer will guide you through these steps:
+## What It Does
 
-1. **Edit Configuration**
-   - Set hostname, username, locale, and timezone
-   - Choose Desktop or Server installation
+1. Preflight: checks root, tools, UEFI presence, DNS
+2. Disk prep: GPT with EFI, swap, and ZFS partitions
+3. ZFS pool: creates `rpool` with tuned datasets; optional encryption
+4. Bootstrap: debootstrap + dist-upgrade to the chosen release
+5. Kernel and packages: HWE for LTS; standard kernel otherwise
+6. Boot: installs ZFSBootMenu and registers UEFI entries; rEFInd optional
+7. System config: locale, timezone, user, sudo policy, networking
+8. Initramfs: includes zpool.cache; enables ZFS services
 
-2. **Select Installation Disk**
-   - Choose target disk (⚠️ **WARNING**: Will be completely erased!)
-   - Multiple confirmations for removable devices
+Typical duration: 15–45 minutes depending on network and packages.
 
-3. **Set User Password**  
-   - Create your user account password
-   - Optionally set ZFS encryption passphrase
+## Supported Ubuntu Versions
 
-4. **Configure Installation Options**
-   - ✅ **ZFS Encryption** (recommended for security)
-   - ✅ **HWE Kernel** (latest drivers for LTS releases)
-   - **Minimal Install** (smaller package set)
-   - **Passwordless Sudo** (convenience vs security trade-off)
-   - **RTL8821CE WiFi Drivers** (if needed)
-   - **rEFInd Bootloader** (optional, ZFSBootMenu works standalone)
+- 24.04 LTS (Noble): standard or HWE kernel; OpenZFS 2.2 defaults
+- 22.04 LTS (Jammy): standard or HWE kernel; OpenZFS 2.1 compatibility
+- 25.04 and newer: standard kernel by default
 
-5. **Start Installation**
-   - Review final configuration
-   - Begin automatic installation process
+## Warnings
 
-## Installation Process
+- Disk erase: the selected disk is wiped completely.
+- UEFI only: legacy BIOS is not supported.
+- Hibernation: encrypted swap uses a volatile key; hibernation is not supported.
+- Network: requires internet for packages and ZFSBootMenu.
 
-The installer automatically performs these steps:
+## Troubleshooting
 
-1. **System Validation**: Checks for root privileges, required tools, UEFI firmware, and network connectivity
-2. **Disk Preparation**: Creates GPT partition table with EFI system, encrypted swap, and ZFS partitions  
-3. **ZFS Pool Creation**: Sets up `rpool` with optimized datasets and optional native encryption
-4. **Ubuntu Installation**: Downloads and installs Ubuntu base system via debootstrap
-5. **Kernel & Packages**: Installs appropriate kernel (HWE for LTS) and Desktop/Server packages
-6. **Boot Configuration**: Installs ZFSBootMenu and creates UEFI boot entries
-7. **System Setup**: Configures user account, networking, locale, timezone, and services
-8. **Finalization**: Generates initramfs, enables ZFS services, and cleans up
+- Where are logs?
+  - Installer log: `/tmp/ubuntu-zfs-root-installer.log`
+  - View live output during install: `tail -f /tmp/ubuntu-zfs-root-installer.log`
 
-**Installation Time**: Typically 15-45 minutes depending on internet speed and selected packages.
+- The installer looks stuck at “Creating ZFS pool”
+  - The installer now times out zpool create (default 180s). On timeout/error it logs diagnostics and aborts.
+  - Causes include: udev not settled, stale ZFS labels, devices still in use, or hardware issues.
+  - Fix quickly via the menu: choose “Clean/Reset Target Disk” and try again.
 
-## Ubuntu Version Support
+- How do I completely reset and start over?
+  - Use the menu item “Clean/Reset Target Disk”. It unmounts, swapoff, exports/destroys rpool, clears ZFS labels, wipes the disk, and reprobes.
+  - Manual reset (if needed):
+    ```bash
+    sudo umount -n -R /mnt || true
+    sudo swapoff -a || true
+    sudo zpool export rpool || true
+    sudo zpool destroy -f rpool || true
+    # Clear any ZFS labels on likely devices
+    for d in /dev/disk/by-id/*-part1 /dev/disk/by-id/*-part2 /dev/disk/by-id/*-part3; do
+      [ -b "$d" ] && sudo zpool labelclear -f "$d" || true
+    done
+    # Wipe and zap the disk
+    sudo wipefs -a /dev/yourdisk
+    sudo sgdisk --zap-all /dev/yourdisk
+    sudo partprobe /dev/yourdisk
+    sudo udevadm settle --timeout 30
+    ```
 
-| Version | Support | Kernel Options | ZFS Compatibility |
-|---------|---------|----------------|-------------------|
-| **24.04 LTS (Noble)** | ✅ Full | Standard + HWE | OpenZFS 2.2+ defaults |
-| **22.04 LTS (Jammy)** | ✅ Full | Standard + HWE | OpenZFS 2.1 compatibility mode |  
-| **25.04 (Plucky)** | ✅ Full | Standard kernel | OpenZFS 2.2+ defaults |
-| **Future Releases** | ✅ Compatible | Standard kernel | OpenZFS 2.2+ defaults |
+- I don’t see a cursor when editing
+  - The “Edit Configuration” menu uses input boxes with a visible cursor. If it still looks odd, ensure your terminal supports cursor visibility in ncurses apps.
 
-## Important Warnings
+- It says UEFI not detected
+  - Reboot and ensure the live USB is booted in UEFI mode (not Legacy/CSM). The installer targets UEFI only.
 
-⚠️ **DATA LOSS WARNING**: This installer will **completely erase** the selected disk. Ensure you have backups of important data.
-
-⚠️ **UEFI REQUIRED**: BIOS/Legacy boot is not supported. You must boot the Ubuntu live media in UEFI mode.
-
-⚠️ **HIBERNATION**: ZFS encrypted swap uses volatile keys and disables hibernation. If you need hibernation, consider zram/zswap alternatives.
-
-⚠️ **NETWORK DEPENDENCY**: The installer downloads packages and ZFSBootMenu components from the internet during installation.
-
-## Advanced Options (Environment Variables)
-
-- `RELEASE`: `noble` (24.04), `jammy` (22.04). Defaults to `noble`.
-- `ID`: root dataset name under `rpool/ROOT` (default: `ubuntu`).
-- `ENCRYPTION`: `true`/`false` for native ZFS encryption.
-- `HWE_KERNEL`: `true`/`false`. Falls back to `linux-generic` if HWE meta unavailable.
-- `MINIMAL_INSTALL`: `true`/`false` for smaller package set.
-- `PASSWORDLESS_SUDO`: `true`/`false`.
-- `INSTALL_REFIND`: `true` to also install rEFInd; default `false` (ZFSBootMenu alone is sufficient).
-- `MIRROR_URL`: override Ubuntu archive mirror; defaults to `archive.ubuntu.com`, auto‑fallback to `old-releases` for EOL series.
-- `DEBUG`: `true` enables shell tracing.
-
-Set before running the script, for example:
-
-```bash
-export INSTALL_REFIND=true DEBUG=true RELEASE=jammy ID=workstation
-sudo ./ubuntu-zfs-root.sh
-```
+- Network errors
+  - Ensure DNS works: `getent hosts archive.ubuntu.com`
+  - You can override the mirror with `MIRROR_URL`.
 
 ## License
 
