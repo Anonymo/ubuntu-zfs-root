@@ -4,6 +4,11 @@
 # Exit immediately if a command exits with a non-zero status
 set -euo pipefail
 
+# Enable shell tracing when DEBUG=true
+if [[ ${DEBUG:-false} == "true" ]]; then
+  set -x
+fi
+
 # Cleanup trap to ensure proper unmounting on failure
 cleanup_on_error() {
   echo "Installation failed! Cleaning up..."
@@ -37,6 +42,28 @@ export MOUNTPOINT="/mnt"          # Installation mount point
 export LOCALE="en_US.UTF-8"       # System locale
 export TIMEZONE="America/Chicago" # System timezone
 export RTL8821CE="false"          # RTL8821CE drivers (only if needed)
+export INSTALL_REFIND="false"      # Install rEFInd bootloader (optional)
+export ID="ubuntu"                 # Root dataset name under rpool/ROOT
+
+# Ubuntu archive mirror (override to use a local or regional mirror)
+export MIRROR_URL="http://archive.ubuntu.com/ubuntu"
+
+# Choose a mirror for the selected release if not overridden
+set_default_mirror() {
+  # If user overrides MIRROR_URL, keep it
+  if [[ -n "${MIRROR_URL:-}" && "${MIRROR_URL}" != "http://archive.ubuntu.com/ubuntu" ]]; then
+    return
+  fi
+  case "${RELEASE}" in
+    mantic|*old*)
+      MIRROR_URL="http://old-releases.ubuntu.com/ubuntu/"
+      ;;
+    *)
+      MIRROR_URL="http://archive.ubuntu.com/ubuntu/"
+      ;;
+  esac
+  export MIRROR_URL
+}
 
 # System settings
 REBOOT="false"                    # Manual reboot (safer)
@@ -87,12 +114,13 @@ dialog_quick_setup() {
 
   # Installation options
   dialog --title "Installation Options" --separate-output --checklist \
-    "Select installation options:" 15 60 5 \
+    "Select installation options:" 16 60 6 \
     "encryption" "Enable ZFS Encryption (Recommended)" on \
     "hwe" "Hardware Enablement Kernel (Latest drivers)" on \
     "minimal" "Minimal Installation (Less packages)" off \
     "passwordless" "Passwordless Sudo (Less secure)" off \
     "rtl8821ce" "RTL8821CE WiFi Drivers" off \
+    "refind" "Install rEFInd (optional, ZBM works alone)" off \
     2>tempfile
   
   if [ $? = 0 ]; then
@@ -105,6 +133,7 @@ dialog_quick_setup() {
     MINIMAL_INSTALL="false"
     PASSWORDLESS_SUDO="false"
     RTL8821CE="false"
+    INSTALL_REFIND="false"
     
     for choice in $choices; do
       case $choice in
@@ -113,6 +142,7 @@ dialog_quick_setup() {
         "minimal") MINIMAL_INSTALL="true";;
         "passwordless") PASSWORDLESS_SUDO="true";;
         "rtl8821ce") RTL8821CE="true";;
+        "refind") INSTALL_REFIND="true";;
       esac
     done
   else
@@ -403,11 +433,13 @@ run_installation_with_progress() {
     echo "XXX"
     EFI_install
     
-    echo "XXX"
-    echo "80"
-    echo "Installing and configuring rEFInd bootloader..."
-    echo "XXX"
-    rEFInd_install
+    if [[ ${INSTALL_REFIND} =~ "true" ]]; then
+      echo "XXX"
+      echo "80"
+      echo "Installing and configuring rEFInd bootloader..."
+      echo "XXX"
+      rEFInd_install
+    fi
     
     echo "XXX"
     echo "90"
@@ -690,6 +722,37 @@ initialize() {
   zgenhostid -f
 }
 
+# Preflight checks and environment sanity
+preflight() {
+  # Require root
+  if [[ ${EUID} -ne 0 ]]; then
+    echo "This installer must be run as root"
+    exit 1
+  fi
+
+  # Check basic tools
+  local req_tools=(dialog sgdisk lsblk zpool zfs blkid awk sed grep)
+  local missing=()
+  for t in "${req_tools[@]}"; do
+    command -v "$t" >/dev/null 2>&1 || missing+=("$t")
+  done
+  if ((${#missing[@]})); then
+    echo "Missing tools: ${missing[*]}"
+    echo "Attempting to install prerequisites..."
+    apt update && apt install -y gdisk zfsutils-linux dialog || true
+  fi
+
+  # Warn if not UEFI (required by this flow)
+  if [[ ! -d /sys/firmware/efi ]]; then
+    dialog --title "UEFI Required" --msgbox "This guide targets UEFI systems. Please boot in UEFI mode." 8 60
+  fi
+
+  # Network check (non-fatal)
+  if ! getent hosts archive.ubuntu.com >/dev/null 2>&1; then
+    dialog --title "Network Warning" --msgbox "Cannot resolve archive.ubuntu.com. Ensure network is connected before installation." 8 70
+  fi
+}
+
 # Disk preparation
 disk_prepare() {
   debug_me
@@ -723,6 +786,17 @@ zfs_pool_create() {
   # Create the zpool
   echo "------------> Create zpool <------------"
   
+  # Determine compatibility property based on release (only constrain on jammy)
+  local compat_args=()
+  case "${RELEASE}" in
+    jammy)
+      compat_args+=( -o compatibility=openzfs-2.1-linux )
+      ;;
+    *)
+      # Use defaults on newer releases (OpenZFS 2.2+)
+      ;;
+  esac
+
   if [[ ${ENCRYPTION} =~ "true" ]]; then
     echo "Setting up encrypted zpool..."
     echo "${ZFS_PASSPHRASE}" | zpool create -f -o ashift=12 \
@@ -734,7 +808,7 @@ zfs_pool_create() {
       -O keylocation=prompt \
       -O keyformat=passphrase \
       -o autotrim=on \
-      -o compatibility=openzfs-2.1-linux \
+      "${compat_args[@]}" \
       -m none "${POOLNAME}" "${POOL_DEVICE}" || { echo "Failed to create encrypted ZFS pool"; exit 1; }
   else
     echo "Setting up unencrypted zpool..."
@@ -744,7 +818,7 @@ zfs_pool_create() {
       -O xattr=sa \
       -O relatime=on \
       -o autotrim=on \
-      -o compatibility=openzfs-2.1-linux \
+      "${compat_args[@]}" \
       -m none "${POOLNAME}" "$POOL_DEVICE" || { echo "Failed to create ZFS pool"; exit 1; }
   fi
 
@@ -752,7 +826,7 @@ zfs_pool_create() {
   sleep 2
 
   # Create initial file systems
-  zfs create -o mountpoint=none "${POOLNAME}"/ROOT
+  zfs create -o mountpoint=none -o canmount=off "${POOLNAME}"/ROOT
   sync
   sleep 2
   zfs create -o mountpoint=/ -o canmount=noauto "${POOLNAME}"/ROOT/"${ID}"
@@ -772,6 +846,16 @@ zfs_pool_create() {
   zfs mount "${POOLNAME}"/ROOT/"${ID}"
   zfs mount "${POOLNAME}"/home
 
+  # Ensure a zpool cache is generated on the installer host
+  zpool set cachefile=/etc/zfs/zpool.cache "${POOLNAME}" || true
+
+  # Create additional standard datasets with tuned properties
+  zfs create -o mountpoint=/var -o atime=off "${POOLNAME}"/var
+  zfs create -o mountpoint=/var/log -o recordsize=8K -o logbias=throughput -o com.sun:auto-snapshot=false "${POOLNAME}"/var/log
+  zfs create -o mountpoint=/var/tmp -o com.sun:auto-snapshot=false "${POOLNAME}"/var/tmp
+  zfs create -o mountpoint=/tmp -o com.sun:auto-snapshot=false "${POOLNAME}"/tmp
+  zfs create -o mountpoint=/srv "${POOLNAME}"/srv
+
   # Update device symlinks
   udevadm trigger
   debug_me
@@ -787,7 +871,7 @@ ubuntu_debootstrap() {
   debootstrap --include=ubuntu-keyring,ca-certificates \
     --components=main,restricted,universe,multiverse \
     --variant=minbase \
-    ${RELEASE} "${MOUNTPOINT}" http://archive.ubuntu.com/ubuntu/ || { echo "Failed to install base Ubuntu system"; exit 1; }
+    ${RELEASE} "${MOUNTPOINT}" "${MIRROR_URL}" || { echo "Failed to install base Ubuntu system"; exit 1; }
 
   # Copy files into the new install
   cp /etc/hostid "${MOUNTPOINT}"/etc/hostid
@@ -799,6 +883,11 @@ ubuntu_debootstrap() {
     if [[ -f /etc/zfs/"${POOLNAME}".key ]]; then
       cp /etc/zfs/"${POOLNAME}".key "${MOUNTPOINT}"/etc/zfs
     fi
+  fi
+
+  # Copy zpool.cache for reliable pool import in initramfs
+  if [[ -f /etc/zfs/zpool.cache ]]; then
+    cp /etc/zfs/zpool.cache "${MOUNTPOINT}"/etc/zfs/ || true
   fi
 
   # Chroot into the new OS
@@ -820,17 +909,17 @@ EOCHROOT
   cat <<EOF >"${MOUNTPOINT}"/etc/apt/sources.list
 # Uncomment the deb-src entries if you need source packages
 
-deb http://archive.ubuntu.com/ubuntu/ ${RELEASE} main restricted universe multiverse
-# deb-src http://archive.ubuntu.com/ubuntu/ ${RELEASE} main restricted universe multiverse
+deb ${MIRROR_URL} ${RELEASE} main restricted universe multiverse
+# deb-src ${MIRROR_URL} ${RELEASE} main restricted universe multiverse
 
-deb http://archive.ubuntu.com/ubuntu/ ${RELEASE}-updates main restricted universe multiverse
-# deb-src http://archive.ubuntu.com/ubuntu/ ${RELEASE}-updates main restricted universe multiverse
+deb ${MIRROR_URL} ${RELEASE}-updates main restricted universe multiverse
+# deb-src ${MIRROR_URL} ${RELEASE}-updates main restricted universe multiverse
 
-deb http://archive.ubuntu.com/ubuntu/ ${RELEASE}-security main restricted universe multiverse
-# deb-src http://archive.ubuntu.com/ubuntu/ ${RELEASE}-security main restricted universe multiverse
+deb ${MIRROR_URL} ${RELEASE}-security main restricted universe multiverse
+# deb-src ${MIRROR_URL} ${RELEASE}-security main restricted universe multiverse
 
-deb http://archive.ubuntu.com/ubuntu/ ${RELEASE}-backports main restricted universe multiverse
-# deb-src http://archive.ubuntu.com/ubuntu/ ${RELEASE}-backports main restricted universe multiverse
+deb ${MIRROR_URL} ${RELEASE}-backports main restricted universe multiverse
+# deb-src ${MIRROR_URL} ${RELEASE}-backports main restricted universe multiverse
 EOF
 
   # Immediately update to current point release before installing any additional packages  
@@ -843,10 +932,15 @@ EOCHROOT
   # Install base packages and kernel with up-to-date versions
   echo "Installing base packages with current ${RELEASE} (${VERSION}) versions..."
   run_in_chroot <<-EOCHROOT
-  # Install kernel based on HWE_KERNEL setting
+  # Install kernel based on HWE_KERNEL setting, fallback if meta not available
   if [[ ${HWE_KERNEL} =~ "true" ]]; then
     echo "Installing HWE kernel for latest hardware support..."
-    ${APT} install -y --no-install-recommends linux-generic-hwe-${VERSION} locales keyboard-configuration console-setup curl nala git
+    if apt-cache show linux-generic-hwe-${VERSION} >/dev/null 2>&1; then
+      ${APT} install -y --no-install-recommends linux-generic-hwe-${VERSION} locales keyboard-configuration console-setup curl nala git
+    else
+      echo "HWE meta linux-generic-hwe-${VERSION} not available; falling back to linux-generic"
+      ${APT} install -y --no-install-recommends linux-generic locales keyboard-configuration console-setup curl nala git
+    fi
   else
     echo "Installing standard kernel..."
     ${APT} install -y --no-install-recommends linux-generic locales keyboard-configuration console-setup curl nala git
@@ -888,6 +982,13 @@ EOCHROOT
   systemctl enable zfs-mount
   systemctl enable zfs-import.target
   echo "UMASK=0077" > /etc/initramfs-tools/conf.d/umask.conf
+  # Ensure zpool cache exists in the target before building initramfs
+  if [[ -f /etc/zfs/zpool.cache ]]; then
+    echo "zpool.cache already present in target"
+  else
+    echo "Note: zpool.cache will be copied from installer environment"
+  fi
+  chmod 1777 /tmp /var/tmp || true
   update-initramfs -c -k all
 EOCHROOT
 }
@@ -912,7 +1013,7 @@ EOCHROOT
   local boot_uuid
   boot_uuid=$(blkid -s UUID -o value "$BOOT_DEVICE")
   cat <<EOF >>${MOUNTPOINT}/etc/fstab
-UUID=${boot_uuid} /boot/efi vfat defaults 0 0
+UUID=${boot_uuid} /boot/efi vfat umask=0077,shortname=mixed 0 0
 EOF
 
   # Install ZBM and configure EFI boot entries
@@ -1053,7 +1154,7 @@ create_swap() {
   echo "------------> Create swap partition <------------"
 
   debug_me
-  echo swap "${DISKID}"-part2 /dev/urandom \
+  echo swap "${SWAP_DEVICE}" /dev/urandom \
     plain,swap,cipher=aes-xts-plain64,hash=sha256,size=512 >>"${MOUNTPOINT}"/etc/crypttab
   echo /dev/mapper/swap none swap defaults 0 0 >>"${MOUNTPOINT}"/etc/fstab
 }
@@ -1265,7 +1366,9 @@ run_basic_installation() {
   create_swap
   ZBM_install
   EFI_install
-  rEFInd_install
+  if [[ ${INSTALL_REFIND} =~ "true" ]]; then
+    rEFInd_install
+  fi
   groups_and_networks
   create_user
   install_ubuntu
@@ -1291,12 +1394,17 @@ run_basic_installation() {
 ################################################################
 # MAIN Program
 
+# Preflight: check environment and set defaults
+set_default_mirror
+
 # Check if dialog is available
 if ! command -v dialog >/dev/null 2>&1; then
   echo "Error: dialog package is required for the TUI installer"
   echo "Please install it with: apt install dialog"
   exit 1
 fi
+
+preflight
 
 # Run the TUI installer main menu
 dialog_main_menu
