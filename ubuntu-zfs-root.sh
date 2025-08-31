@@ -15,7 +15,7 @@ cleanup_on_error() {
   umount -n -R "${MOUNTPOINT}" >/dev/null 2>&1 || true
   zpool export "${POOLNAME}" >/dev/null 2>&1 || true
 }
-trap cleanup_on_error ERR
+trap cleanup_on_error ERR INT TERM
 
 # Default configuration values - All configurable via professional interface
 export DISTRO="desktop"           # Installation type (desktop/server)
@@ -47,6 +47,22 @@ export ID="ubuntu"                 # Root dataset name under rpool/ROOT
 
 # Ubuntu archive mirror (override to use a local or regional mirror)
 export MIRROR_URL="http://archive.ubuntu.com/ubuntu"
+
+# Logging and timeouts
+export LOGFILE="/tmp/ubuntu-zfs-root-installer.log"
+export TIMEOUT_UDEV=30            # seconds for udevadm settle
+export TIMEOUT_POOL_CREATE=180    # seconds for zpool create
+
+log() { echo "[$(date +'%F %T')] $*" | tee -a "$LOGFILE"; }
+run_with_timeout() { local secs="$1"; shift; log "+ $*"; timeout --kill-after=10s "${secs}" "$@" | tee -a "$LOGFILE"; }
+run_quiet() { log "+ $*"; "$@" | tee -a "$LOGFILE"; }
+
+collect_diagnostics() {
+  log "Collecting diagnostics..."
+  lsblk -o NAME,SIZE,TYPE,FSTYPE,PARTLABEL,MOUNTPOINT | tee -a "$LOGFILE"
+  (command -v zpool >/dev/null 2>&1 && zpool status -v || true) | tee -a "$LOGFILE"
+  (dmesg | tail -n 200) | tee -a "$LOGFILE"
+}
 
 # Choose a mirror for the selected release if not overridden
 set_default_mirror() {
@@ -286,13 +302,14 @@ dialog_main_menu() {
     exec 3>&1
     selection=$(dialog --clear --title "Ubuntu ZFS Root Installer" --menu \
       "Professional Ubuntu installation with ZFS root filesystem\n\
-Choose an option:" 15 60 6 \
+Choose an option:" 15 60 7 \
       "1" "Edit Configuration" \
       "2" "Select Installation Disk" \
       "3" "Set Passwords" \
       "4" "Review Configuration" \
       "5" "Start Installation" \
-      "6" "Exit" 2>&1 1>&3)
+      "6" "Clean/Reset Target Disk" \
+      "7" "Exit" 2>&1 1>&3)
     exec 3>&-
     
     case $selection in
@@ -344,6 +361,10 @@ Start installation now?" 10 60; then
         fi
         ;;
       6)
+        # Clean/reset target disk
+        force_reset_disk
+        ;;
+      7)
         if dialog --title "Exit" --yesno "Are you sure you want to exit?" 6 40; then
           exit 0
         fi
@@ -705,6 +726,39 @@ source /etc/os-release
 SWAPSIZE=$(free --giga | grep Mem | awk '{OFS="";print "+", $2 ,"G"}')
 export SWAPSIZE
 
+# Force cleanup/reset of target disk and related state
+force_reset_disk() {
+  # Ensure a disk is selected (so we know what to wipe)
+  if [[ -z "${DISKID:-}" || ! -b "${DISKID:-/dev/null}" ]]; then
+    if ! dialog_select_disk; then
+      dialog --title "Reset Aborted" --msgbox "No disk selected." 6 40
+      return 1
+    fi
+  fi
+
+  if ! dialog --defaultno --yesno "This will unmount ${MOUNTPOINT}, export/destroy pools, and wipe ${DISKID}.\n\nProceed?" 10 70; then
+    return 1
+  fi
+
+  log "Force resetting disk ${DISKID}"
+  umount -n -R "${MOUNTPOINT}" >/dev/null 2>&1 || true
+  swapoff -a >/dev/null 2>&1 || true
+  zpool export "${POOLNAME}" >/dev/null 2>&1 || true
+  zpool destroy -f "${POOLNAME}" >/dev/null 2>&1 || true
+
+  # Clear ZFS labels if any
+  for dev in "${POOL_DEVICE:-}" "${SWAP_DEVICE:-}" "${BOOT_DEVICE:-}" "${DISKID}"; do
+    [[ -b "$dev" ]] && zpool labelclear -f "$dev" >/dev/null 2>&1 || true
+  done
+
+  wipefs -a "${DISKID}" >/dev/null 2>&1 || true
+  sgdisk --zap-all "${DISKID}" >/dev/null 2>&1 || true
+  partprobe "${DISKID}" >/dev/null 2>&1 || true
+  udevadm settle --timeout ${TIMEOUT_UDEV} || true
+
+  dialog --title "Reset Complete" --msgbox "Target disk has been reset. You can start the installation again." 7 60
+}
+
 # Start installation
 initialize() {
   apt update
@@ -751,7 +805,8 @@ disk_prepare() {
   blkdiscard -f "${DISKID}" || true  # Allow failure on non-SSD devices
   sgdisk --zap-all "${DISKID}" || { echo "Failed to wipe disk ${DISKID}"; exit 1; }
   sync
-  udevadm settle
+  partprobe "${DISKID}" || true
+  udevadm settle --timeout ${TIMEOUT_UDEV} || true
 
   ## gdisk hex codes:
   ## EF02 BIOS boot partitions
@@ -767,7 +822,8 @@ disk_prepare() {
   sgdisk -n "${SWAP_PART}:0:${SWAPSIZE}" -t "${SWAP_PART}:8200" "${SWAP_DISK}" || { echo "Failed to create swap partition"; exit 1; }
   sgdisk -n "${POOL_PART}:0:-10m" -t "${POOL_PART}:BF00" "${POOL_DISK}" || { echo "Failed to create ZFS partition"; exit 1; }
   sync
-  udevadm settle
+  partprobe "${DISKID}" || true
+  udevadm settle --timeout ${TIMEOUT_UDEV} || true
   debug_me
 }
 
@@ -789,7 +845,7 @@ zfs_pool_create() {
 
   if [[ ${ENCRYPTION} =~ "true" ]]; then
     echo "Setting up encrypted zpool..."
-    echo "${ZFS_PASSPHRASE}" | zpool create -f -o ashift=12 \
+    if ! echo "${ZFS_PASSPHRASE}" | run_with_timeout ${TIMEOUT_POOL_CREATE}s zpool create -f -o ashift=12 \
       -O compression=lz4 \
       -O acltype=posixacl \
       -O xattr=sa \
@@ -799,17 +855,25 @@ zfs_pool_create() {
       -O keyformat=passphrase \
       -o autotrim=on \
       "${compat_args[@]}" \
-      -m none "${POOLNAME}" "${POOL_DEVICE}" || { echo "Failed to create encrypted ZFS pool"; exit 1; }
+      -m none "${POOLNAME}" "${POOL_DEVICE}"; then
+      echo "Failed to create encrypted ZFS pool (timeout or error)" | tee -a "$LOGFILE"
+      collect_diagnostics
+      exit 1
+    fi
   else
     echo "Setting up unencrypted zpool..."
-    zpool create -f -o ashift=12 \
+    if ! run_with_timeout ${TIMEOUT_POOL_CREATE}s zpool create -f -o ashift=12 \
       -O compression=lz4 \
       -O acltype=posixacl \
       -O xattr=sa \
       -O relatime=on \
       -o autotrim=on \
       "${compat_args[@]}" \
-      -m none "${POOLNAME}" "$POOL_DEVICE" || { echo "Failed to create ZFS pool"; exit 1; }
+      -m none "${POOLNAME}" "$POOL_DEVICE"; then
+      echo "Failed to create ZFS pool (timeout or error)" | tee -a "$LOGFILE"
+      collect_diagnostics
+      exit 1
+    fi
   fi
 
   sync
