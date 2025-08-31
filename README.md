@@ -43,9 +43,9 @@ A comprehensive bash script that provides a **Debian‑installer style TUI** for
    sudo ./ubuntu-zfs-root.sh
    ```
 5. In the TUI:
-   - Quick Setup: hostname, user, locale, timezone
+   - Edit Configuration: hostname, user, locale, timezone
    - Select Installation Disk: pick the target disk (will be erased)
-   - Set Passwords: root, user, and optional ZFS encryption passphrase
+   - Set Passwords: user password and optional ZFS encryption passphrase
    - Installation Options: encryption, HWE kernel, minimal install, sudo policy, Wi‑Fi driver, optional rEFInd
    - Start Installation
 

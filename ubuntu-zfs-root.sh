@@ -75,7 +75,7 @@ POOLNAME="rpool"                  # ZFS pool name
 dialog_quick_setup() {
   # Welcome screen
   dialog --title "Ubuntu ZFS Root Installer" --msgbox \
-    "Welcome to the Ubuntu ZFS Root Installer!\n\nThis installer will set up Ubuntu with ZFS root filesystem, optional encryption, ZFSBootMenu, and rEFInd bootloader.\n\nPress OK to continue with Quick Setup." 12 60
+    "Welcome to the Ubuntu ZFS Root Installer!\n\nThis installer will set up Ubuntu with ZFS root filesystem, optional encryption, ZFSBootMenu, and rEFInd bootloader.\n\nPress OK to edit the default configuration." 12 60
 
   # System configuration form
   exec 3>&1
@@ -190,13 +190,13 @@ dialog_select_disk() {
     # Determine status
     if [[ -n "$mountpoint" && "$mountpoint" != "-" ]]; then
       status="MOUNTED"
-      disk_list="$disk_list $disk \"$size - $model - ⚠️ $status\" off"
+      disk_list="$disk_list $disk \"$size - $model - [MOUNTED] $status\" off"
     elif [[ "$removable" == "1" ]]; then
       status="USB/Removable"
-      disk_list="$disk_list $disk \"$size - $model - 🔶 $status\" off"
+      disk_list="$disk_list $disk \"$size - $model - [USB] $status\" off"
     else
       status="Available"
-      disk_list="$disk_list $disk \"$size - $model - ✅ $status\" off"
+      disk_list="$disk_list $disk \"$size - $model - [AVAILABLE] $status\" off"
       disks_info="$disks_info\n$disk: $size $model ($status)"
     fi
   done < <(lsblk -d -o NAME,TYPE,SIZE,MODEL,MOUNTPOINT | grep disk)
@@ -208,7 +208,7 @@ dialog_select_disk() {
 
   # Show disk selection
   eval "dialog --title \"Select Installation Disk\" --radiolist \
-    \"⚠️  WARNING: Selected disk will be COMPLETELY ERASED!\\n\\nAvailable disks:\" \
+    \"WARNING: Selected disk will be COMPLETELY ERASED!\\n\\nAvailable disks:\" \
     15 80 10 $disk_list" 2>tempfile
     
   if [ $? = 0 ]; then
@@ -227,7 +227,7 @@ dialog_select_disk() {
     # Extra confirmation for removable devices
     removable=$(cat "/sys/block/${selected_disk}/removable" 2>/dev/null || echo "0")
     if [[ "$removable" == "1" ]]; then
-      dialog --title "⚠️  REMOVABLE DEVICE WARNING" --defaultno --yesno \
+      dialog --title "REMOVABLE DEVICE WARNING" --defaultno --yesno \
         "You selected: /dev/${selected_disk} (Removable Device)\n\n\
 This appears to be a USB drive or removable device.\n\
 This might be your installation media!\n\n\
@@ -240,7 +240,7 @@ Continue only if you're certain this is the target disk." 14 65
     fi
     
     # Final confirmation
-    dialog --title "⚠️  FINAL WARNING" --defaultno --yesno \
+    dialog --title "FINAL WARNING" --defaultno --yesno \
       "You selected: /dev/${selected_disk}\n\n\
 ALL DATA ON THIS DISK WILL BE PERMANENTLY DESTROYED!\n\n\
 This action cannot be undone.\n\n\
@@ -255,38 +255,28 @@ Are you absolutely sure you want to continue?" 12 60
 
 # Dialog-based password collection
 dialog_collect_passwords() {
-  # Root password
-  exec 3>&1
-  ROOT_PASSWORD=$(dialog --title "Set Root Password" --insecure --passwordbox \
-    "Enter password for root user:" 10 60 2>&1 1>&3)
-  exec 3>&-
-  
-  if [ $? != 0 ] || [ -z "$ROOT_PASSWORD" ]; then
-    return 1
-  fi
-  
-  # User password  
+  # User password
   exec 3>&1
   USER_PASSWORD=$(dialog --title "Set User Password" --insecure --passwordbox \
     "Enter password for $USERNAME:" 10 60 2>&1 1>&3)
   exec 3>&-
-  
+
   if [ $? != 0 ] || [ -z "$USER_PASSWORD" ]; then
     return 1
   fi
-  
+
   # Encryption passphrase (if encryption enabled)
   if [ "$ENCRYPTION" = "true" ]; then
     exec 3>&1
     ZFS_PASSPHRASE=$(dialog --title "Set Encryption Passphrase" --insecure --passwordbox \
       "Enter passphrase for ZFS encryption:" 10 60 2>&1 1>&3)
     exec 3>&-
-    
+
     if [ $? != 0 ] || [ -z "$ZFS_PASSPHRASE" ]; then
       return 1
     fi
   fi
-  
+
   return 0
 }
 
@@ -297,7 +287,7 @@ dialog_main_menu() {
     selection=$(dialog --clear --title "Ubuntu ZFS Root Installer" --menu \
       "Professional Ubuntu installation with ZFS root filesystem\n\
 Choose an option:" 15 60 6 \
-      "1" "Quick Setup (Recommended)" \
+      "1" "Edit Configuration" \
       "2" "Select Installation Disk" \
       "3" "Set Passwords" \
       "4" "Review Configuration" \
@@ -330,7 +320,7 @@ Distribution: ${DISTRO:-Not Set}\n\
 Encryption: $([ "$ENCRYPTION" = "true" ] && echo "Enabled" || echo "Disabled")\n\
 HWE Kernel: $([ "$HWE_KERNEL" = "true" ] && echo "Yes" || echo "No")\n\
 Installation Disk: ${DISK:-Not Selected}\n\
-Passwords: $([ -n "$ROOT_PASSWORD" ] && echo "Set" || echo "Not Set")" 14 60
+User Password: $([ -n "$USER_PASSWORD" ] && echo "Set" || echo "Not Set")" 14 60
         ;;
       5)
         # Validate configuration
@@ -338,8 +328,8 @@ Passwords: $([ -n "$ROOT_PASSWORD" ] && echo "Set" || echo "Not Set")" 14 60
           dialog --title "Error" --msgbox "Please select an installation disk first." 6 40
           continue
         fi
-        if [[ -z "$ROOT_PASSWORD" ]]; then
-          dialog --title "Error" --msgbox "Please set passwords first." 6 40
+        if [[ -z "${USER_PASSWORD:-}" ]]; then
+          dialog --title "Error" --msgbox "Please set the user password first." 6 50
           continue
         fi
         
@@ -473,12 +463,12 @@ run_installation_with_progress() {
   rm -f "$progress_pipe"
   
   # Show completion
-  dialog --title "Installation Complete!" --msgbox \
-    "Ubuntu with ZFS root filesystem has been successfully installed!\n\n\
-✅ ZFS pool created with$([ "$ENCRYPTION" = "true" ] && echo " encryption" || echo "out encryption")\n\
-✅ ZFSBootMenu and rEFInd bootloader installed\n\
-✅ System configured and ready to boot\n\n\
-You can now reboot and enjoy your new ZFS-powered Ubuntu system!" 14 70
+  dialog --title "Installation Complete" --msgbox \
+    "Ubuntu with ZFS root filesystem has been successfully installed.\n\n\
+ZFS pool created with$([ "$ENCRYPTION" = "true" ] && echo " encryption" || echo "out encryption")\n\
+ZFSBootMenu$([ "${INSTALL_REFIND}" = "true" ] && echo " and rEFInd") boot entries configured\n\
+System configured and ready to boot\n\n\
+You can now reboot and use your new ZFS-powered Ubuntu system." 14 70
   
   # Ask about reboot
   if dialog --title "Reboot Now?" --yesno \
@@ -900,10 +890,7 @@ ubuntu_debootstrap() {
   echo "$HOSTNAME" >"${MOUNTPOINT}"/etc/hostname
   echo "127.0.1.1       $HOSTNAME" >>"${MOUNTPOINT}"/etc/hosts
 
-  # Set root passwd
-  run_in_chroot <<-EOCHROOT
-  echo -e "root:${ROOT_PASSWORD}" | chpasswd
-EOCHROOT
+  # Keep root account locked (Ubuntu default); no root password is set
 
   # Set up APT sources
   cat <<EOF >"${MOUNTPOINT}"/etc/apt/sources.list
@@ -932,9 +919,9 @@ EOCHROOT
   # Install base packages and kernel with up-to-date versions
   echo "Installing base packages with current ${RELEASE} (${VERSION}) versions..."
   run_in_chroot <<-EOCHROOT
-  # Install kernel based on HWE_KERNEL setting, fallback if meta not available
-  if [[ ${HWE_KERNEL} =~ "true" ]]; then
-    echo "Installing HWE kernel for latest hardware support..."
+  # Install kernel: HWE only on LTS (jammy/noble); standard kernel elsewhere
+  if [[ ${HWE_KERNEL} =~ "true" ]] && [[ "${RELEASE}" == "jammy" || "${RELEASE}" == "noble" ]]; then
+    echo "Installing HWE kernel for LTS release..."
     if apt-cache show linux-generic-hwe-${VERSION} >/dev/null 2>&1; then
       ${APT} install -y --no-install-recommends linux-generic-hwe-${VERSION} locales keyboard-configuration console-setup curl nala git
     else
@@ -1035,7 +1022,7 @@ EFI_install() {
   
   # Check for UEFI firmware presence
   if [[ ! -d "/sys/firmware/efi" ]]; then
-    echo "❌ UEFI firmware not detected. This system appears to be BIOS/Legacy mode."
+    echo "UEFI firmware not detected. This system appears to be BIOS/Legacy mode."
     echo "This script requires UEFI mode. Please boot in UEFI mode and try again."
     exit 1
   fi
@@ -1303,11 +1290,11 @@ uncompress_logs() {
 EOCHROOT
 }
 
-# re-lock root account
+# Ensure root account is locked (Ubuntu default)
 disable_root_login() {
   echo "------------> Disable root login <------------"
   run_in_chroot <<-EOCHROOT
-  usermod -p '*' root
+  passwd -l root || true
 EOCHROOT
 }
 
@@ -1356,7 +1343,7 @@ EOCHROOT
 # Function to run installation after basic menu completion
 run_basic_installation() {
   echo ""
-  echo "🚀 Starting Ubuntu ZFS installation..."
+  echo "Starting Ubuntu ZFS installation..."
   echo ""
   
   initialize
@@ -1381,7 +1368,7 @@ run_basic_installation() {
   cleanup
 
   echo ""
-  echo "✅ Installation completed successfully!"
+  echo "Installation completed successfully!"
   echo ""
 
   if [[ ${REBOOT} =~ "true" ]]; then
