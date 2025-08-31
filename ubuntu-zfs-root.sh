@@ -53,9 +53,9 @@ export LOGFILE="/tmp/ubuntu-zfs-root-installer.log"
 export TIMEOUT_UDEV=30            # seconds for udevadm settle
 export TIMEOUT_POOL_CREATE=180    # seconds for zpool create
 
-log() { echo "[$(date +'%F %T')] $*" | tee -a "$LOGFILE"; }
-run_with_timeout() { local secs="$1"; shift; log "+ $*"; timeout --kill-after=10s "${secs}" "$@" | tee -a "$LOGFILE"; }
-run_quiet() { log "+ $*"; "$@" | tee -a "$LOGFILE"; }
+log() { printf '[%s] %s\n' "$(date +'%F %T')" "$*" >> "$LOGFILE"; }
+run_with_timeout() { local secs="$1"; shift; log "+ $*"; timeout --kill-after=10s "${secs}" "$@" >> "$LOGFILE" 2>&1; }
+run_quiet() { log "+ $*"; "$@" >> "$LOGFILE" 2>&1; }
 
 collect_diagnostics() {
   log "Collecting diagnostics..."
@@ -89,6 +89,8 @@ POOLNAME="rpool"                  # ZFS pool name
 # Configuration menu functions
 # Dialog-based TUI interface (Debian-style)
 dialog_quick_setup() {
+  # Ensure cursor is visible for editing
+  command -v tput >/dev/null 2>&1 && tput cnorm || true
   # Welcome screen
   dialog --title "Ubuntu ZFS Root Installer" --msgbox \
     "Welcome to the Ubuntu ZFS Root Installer!\n\nThis installer will set up Ubuntu with ZFS root filesystem, optional encryption, ZFSBootMenu, and rEFInd bootloader.\n\nPress OK to edit the default configuration." 12 60
@@ -314,9 +316,7 @@ Choose an option:" 15 60 7 \
     
     case $selection in
       1)
-        if dialog_quick_setup; then
-          dialog --title "Success" --msgbox "Configuration completed successfully!" 6 40
-        fi
+        dialog_edit_config_menu
         ;;
       2)
         if dialog_select_disk; then
@@ -406,76 +406,76 @@ run_installation_with_progress() {
     echo "10"
     echo "Initializing system and installing dependencies..."
     echo "XXX"
-    initialize
+    initialize >> "$LOGFILE" 2>&1
     
     echo "XXX"
     echo "20"  
     echo "Preparing disk and creating partitions..."
     echo "XXX"
-    disk_prepare
+    disk_prepare >> "$LOGFILE" 2>&1
     
     echo "XXX"
     echo "30"
     echo "Creating ZFS pool with$([ "$ENCRYPTION" = "true" ] && echo " encryption" || echo "out encryption")..."
     echo "XXX"
-    zfs_pool_create
+    zfs_pool_create >> "$LOGFILE" 2>&1
     
     echo "XXX"
     echo "40"
     echo "Installing Ubuntu base system (this may take several minutes)..."
     echo "XXX"
-    ubuntu_debootstrap
+    ubuntu_debootstrap >> "$LOGFILE" 2>&1
     
     echo "XXX"
     echo "50"
     echo "Configuring swap partition..."
     echo "XXX"
-    create_swap
+    create_swap >> "$LOGFILE" 2>&1
     
     echo "XXX"
     echo "60"
     echo "Installing ZFSBootMenu..."
     echo "XXX"
-    ZBM_install
+    ZBM_install >> "$LOGFILE" 2>&1
     
     echo "XXX"
     echo "70"
     echo "Setting up EFI boot partition..."
     echo "XXX"
-    EFI_install
+    EFI_install >> "$LOGFILE" 2>&1
     
     if [[ ${INSTALL_REFIND} =~ "true" ]]; then
       echo "XXX"
       echo "80"
       echo "Installing and configuring rEFInd bootloader..."
       echo "XXX"
-      rEFInd_install
+      rEFInd_install >> "$LOGFILE" 2>&1
     fi
     
     echo "XXX"
     echo "90"
     echo "Configuring system settings and creating user..."
     echo "XXX"
-    groups_and_networks
-    create_user
-    install_ubuntu
-    uncompress_logs
+    groups_and_networks >> "$LOGFILE" 2>&1
+    create_user >> "$LOGFILE" 2>&1
+    install_ubuntu >> "$LOGFILE" 2>&1
+    uncompress_logs >> "$LOGFILE" 2>&1
     
     if [[ ${RTL8821CE} =~ "true" ]]; then
       echo "XXX"
       echo "95"
       echo "Installing RTL8821CE WiFi drivers..."
       echo "XXX"
-      rtl8821ce_install
+      rtl8821ce_install >> "$LOGFILE" 2>&1
     fi
     
     echo "XXX"
     echo "100"
     echo "Installation completed successfully!"
     echo "XXX"
-    disable_root_login
-    show_system_version
-    cleanup
+    disable_root_login >> "$LOGFILE" 2>&1
+    show_system_version >> "$LOGFILE" 2>&1
+    cleanup >> "$LOGFILE" 2>&1
     
   } > "$progress_pipe" 2>/dev/null
   
@@ -1459,3 +1459,88 @@ preflight
 
 # Run the TUI installer main menu
 dialog_main_menu
+# Interactive configuration editor (per-field input with visible cursor)
+dialog_edit_config_menu() {
+  while true; do
+    exec 3>&1
+    choice=$(dialog --clear --title "Edit Configuration" --menu \
+      "Select a field to edit (Enter to edit):" 15 60 8 \
+      1 "Hostname: ${HOSTNAME}" \
+      2 "Username: ${USERNAME}" \
+      3 "Locale: ${LOCALE}" \
+      4 "Timezone: ${TIMEZONE}" \
+      5 "Distribution: ${DISTRO}" \
+      6 "Installation Options" \
+      7 "Back" 2>&1 1>&3)
+    status=$?
+    exec 3>&-
+    if [[ $status -ne 0 || "$choice" == "7" ]]; then
+      break
+    fi
+    case "$choice" in
+      1)
+        exec 3>&1
+        new=$(dialog --title "Hostname" --inputbox "Enter hostname:" 10 60 "$HOSTNAME" 2>&1 1>&3)
+        rc=$?
+        exec 3>&-
+        [[ $rc -eq 0 && -n "$new" ]] && HOSTNAME="$new"
+        ;;
+      2)
+        exec 3>&1
+        new=$(dialog --title "Username" --inputbox "Enter username:" 10 60 "$USERNAME" 2>&1 1>&3)
+        rc=$?
+        exec 3>&-
+        [[ $rc -eq 0 && -n "$new" ]] && USERNAME="$new"
+        ;;
+      3)
+        exec 3>&1
+        new=$(dialog --title "Locale" --inputbox "Enter locale (e.g. en_US.UTF-8):" 10 60 "$LOCALE" 2>&1 1>&3)
+        rc=$?
+        exec 3>&-
+        [[ $rc -eq 0 && -n "$new" ]] && LOCALE="$new"
+        ;;
+      4)
+        exec 3>&1
+        new=$(dialog --title "Timezone" --inputbox "Enter timezone (e.g. America/Chicago):" 10 60 "$TIMEZONE" 2>&1 1>&3)
+        rc=$?
+        exec 3>&-
+        [[ $rc -eq 0 && -n "$new" ]] && TIMEZONE="$new"
+        ;;
+      5)
+        configure_distribution
+        ;;
+      6)
+        # Reuse the checklist from quick setup
+        exec 3>&1
+        dialog --title "Installation Options" --separate-output --checklist \
+          "Select installation options:" 16 60 6 \
+          "encryption" "Enable ZFS Encryption (Recommended)" $([[ "$ENCRYPTION" == "true" ]] && echo on || echo off) \
+          "hwe" "Hardware Enablement Kernel (Latest drivers)" $([[ "$HWE_KERNEL" == "true" ]] && echo on || echo off) \
+          "minimal" "Minimal Installation (Less packages)" $([[ "$MINIMAL_INSTALL" == "true" ]] && echo on || echo off) \
+          "passwordless" "Passwordless Sudo (Less secure)" $([[ "$PASSWORDLESS_SUDO" == "true" ]] && echo on || echo off) \
+          "rtl8821ce" "RTL8821CE WiFi Drivers" $([[ "$RTL8821CE" == "true" ]] && echo on || echo off) \
+          "refind" "Install rEFInd (optional, ZBM works alone)" $([[ "$INSTALL_REFIND" == "true" ]] && echo on || echo off) \
+          2>tempfile
+        rc=$?
+        exec 3>&-
+        if [[ $rc -eq 0 ]]; then
+          choices=$(cat tempfile)
+          rm -f tempfile
+          ENCRYPTION="false"; HWE_KERNEL="false"; MINIMAL_INSTALL="false"; PASSWORDLESS_SUDO="false"; RTL8821CE="false"; INSTALL_REFIND="false"
+          for choice in $choices; do
+            case $choice in
+              encryption) ENCRYPTION="true";;
+              hwe) HWE_KERNEL="true";;
+              minimal) MINIMAL_INSTALL="true";;
+              passwordless) PASSWORDLESS_SUDO="true";;
+              rtl8821ce) RTL8821CE="true";;
+              refind) INSTALL_REFIND="true";;
+            esac
+          done
+        else
+          rm -f tempfile
+        fi
+        ;;
+    esac
+  done
+}
