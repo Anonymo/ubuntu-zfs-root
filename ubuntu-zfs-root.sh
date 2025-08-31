@@ -1443,22 +1443,6 @@ run_basic_installation() {
 
 
 ################################################################
-# MAIN Program
-
-# Preflight: check environment and set defaults
-set_default_mirror
-
-# Check if dialog is available
-if ! command -v dialog >/dev/null 2>&1; then
-  echo "Error: dialog package is required for the TUI installer"
-  echo "Please install it with: apt install dialog"
-  exit 1
-fi
-
-preflight
-
-# Run the TUI installer main menu
-dialog_main_menu
 # Interactive configuration editor (per-field input with visible cursor)
 dialog_edit_config_menu() {
   while true; do
@@ -1510,7 +1494,7 @@ dialog_edit_config_menu() {
         configure_distribution
         ;;
       6)
-        # Reuse the checklist from quick setup
+        # Edit installation options with current values toggled
         exec 3>&1
         dialog --title "Installation Options" --separate-output --checklist \
           "Select installation options:" 16 60 6 \
@@ -1544,3 +1528,22 @@ dialog_edit_config_menu() {
     esac
   done
 }
+
+################################################################
+# MAIN Program
+
+# Preflight: check environment and set defaults
+set_default_mirror
+
+# Check if dialog is available
+if ! command -v dialog >/dev/null 2>&1; then
+  echo "Error: dialog package is required for the TUI installer"
+  echo "Please install it with: apt install dialog"
+  exit 1
+fi
+
+preflight
+
+# Run the TUI installer main menu
+dialog_main_menu
+ 
